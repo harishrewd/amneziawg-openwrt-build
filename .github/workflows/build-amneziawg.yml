@@ -1,0 +1,80 @@
+name: Build AmneziaWG v3 APKs for Stable 25.12.5
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'Target OpenWrt Release version'
+        required: true
+        default: '25.12.5'
+
+jobs:
+  build:
+    name: Compile Official AWG Stable APK Stack
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gettext git libncurses5-dev libssl-dev python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget apk-tools
+
+      - name: Setup OpenWrt 25.12.5 Environment inside openwrt/ Folder
+        run: |
+          VERSION="${{ github.event.inputs.openwrt_version }}"
+          SDK_URL="https://openwrt.org{VERSION}/targets/mediatek/filogic/openwrt-sdk-${VERSION}-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.xz"
+          
+          echo "Fetching target stable release SDK via: $SDK_URL"
+          mkdir -p openwrt
+          wget -qO sdk.tar.xz "$SDK_URL"
+          
+          # Unpacking components cleanly into the explicit openwrt/ folder matrix
+          tar -xf sdk.tar.xz -C openwrt --strip-components=1
+          rm sdk.tar.xz
+
+      - name: Clone AmneziaWG Master Branch & Setup Feeds
+        working-directory: openwrt
+        run: |
+          # Injecting the rolling master branch to secure latest v3 specs
+          echo "src-git amneziawg https://github.com" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # Inject core wireguard headers into position inside the specific folder layout
+          mkdir -p package/feeds/amneziawg/kmod-amneziawg/src/wireguard
+          if [ -d build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic/linux-* ]; then
+            ln -s build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic/linux-*/drivers/net/wireguard/* package/feeds/amneziawg/kmod-amneziawg/src/wireguard/ 2>/dev/null || true
+          fi
+
+      - name: Configure APK Package Selection
+        working-directory: openwrt
+        run: |
+          make defconfig
+          # Target configuration injection maps
+          echo "CONFIG_PACKAGE_kmod-amneziawg=m" >> .config
+          echo "CONFIG_PACKAGE_amneziawg-tools=m" >> .config
+          echo "CONFIG_PACKAGE_luci-proto-amneziawg=m" >> .config
+          
+          # Establish internal crypto module mappings to process Junk Packet parameters cleanly
+          echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-wireguard=y" >> .config
+          
+          make defconfig
+
+      - name: Compile Unified Stable Packages
+        working-directory: openwrt
+        run: |
+          make package/feeds/amneziawg/kmod-amneziawg/compile V=s -j$(nproc)
+          make package/feeds/amneziawg/amneziawg-tools/compile V=s -j$(nproc)
+          make package/feeds/amneziawg/luci-proto-amneziawg/compile V=s -j$(nproc)
+
+      - name: Upload Artifacts Bundle From Explicit Target Path
+        uses: actions/upload-artifact@v4
+        with:
+          name: amneziawg-stable-25.12.5-apks
+          path: openwrt/bin/**/*.apk
