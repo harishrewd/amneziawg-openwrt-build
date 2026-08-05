@@ -1,4 +1,4 @@
-# Version 5.0-Production (Fixed APT Dependency Step for D-Link M30)
+# Version 6.0-Production (Ultra-Lightweight SDK Workflow for D-Link M30)
 name: Build Custom AmneziaWG v3 APK
 
 on:
@@ -6,41 +6,41 @@ on:
 
 jobs:
   build:
+    name: Compile Official AWG Stable APK Stack
     runs-on: ubuntu-24.04
+
     steps:
-      - name: Checkout OpenWrt Core Code
+      - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          repository: 'openwrt/openwrt'
-          ref: 'openwrt-25.12'   # Pulls the stable 25.12 release source tree
-          path: 'openwrt'
 
-      - name: Install System Dependencies Safely
+      - name: Setup OpenWrt 25.12.5 Environment inside openwrt/ Folder
         run: |
-          # The fix: prevent network/mirror hiccups from crashing the start phase
-          sudo apt-get update -y || true
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-            gettext git libncurses5-dev libssl-dev python3-setuptools \
-            rsync swig unzip zlib1g-dev file wget zstd libz3-dev
+          # Fetch the official stable release build environment tools directly
+          SDK_URL="https://openwrt.org"
+          
+          mkdir -p openwrt
+          wget -qO sdk.tar.xz "$SDK_URL"
+          tar -xf sdk.tar.xz -C openwrt --strip-components=1
+          rm sdk.tar.xz
 
-      - name: Set Up Package Feeds
+      - name: Clone AmneziaWG Master Branch & Setup Feeds
+        working-directory: openwrt
         run: |
-          cd openwrt
-          # Grabs the absolute latest live code branch from Slava's repo
+          # Inject Slava's live codebase repository definitions directly into tracking feeds
           echo "src-git amneziawg https://github.com" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-      - name: Configure Target Architecture and Core Variables
-        run: |
-          cd openwrt
-          # Select exact MediaTek Filogic hardware target architecture for D-Link Aquila M30
-          echo "CONFIG_TARGET_mediatek=y" > .config
-          echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-          echo "CONFIG_TARGET_mediatek_filogic_DEVICE_dlink_aquila-pro-ai-m30-a1=y" >> .config
           
-          # Force build all required matching dependencies
+          # Fix missing internal wireguard headers for GCC-14 development environment
+          mkdir -p package/feeds/amneziawg/kmod-amneziawg/src/wireguard
+          if [ -d build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic/linux-* ]; then
+            ln -s build_dir/target-aarch64_cortex-a53_musl/linux-mediatek_filogic/linux-*/drivers/net/wireguard/* package/feeds/amneziawg/kmod-amneziawg/src/wireguard/ 2>/dev/null || true
+          fi
+
+      - name: Configure APK Package Selection
+        working-directory: openwrt
+        run: |
+          make defconfig
           echo "CONFIG_PACKAGE_kmod-amneziawg=m" >> .config
           echo "CONFIG_PACKAGE_amneziawg-tools=m" >> .config
           echo "CONFIG_PACKAGE_luci-proto-amneziawg=m" >> .config
@@ -48,22 +48,12 @@ jobs:
           # Include native core cryptography dependencies to avoid compilation symbol drops
           echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y" >> .config
           echo "CONFIG_PACKAGE_kmod-wireguard=y" >> .config
-          
           make defconfig
 
-      - name: Toolchain and Ordered Package Compilation
+      - name: Compile Unified Stable Packages
+        working-directory: openwrt
         run: |
-          cd openwrt
-          export FORCE_UNSAFE_CONFIGURE=1
-          make tools/install -j$(nproc)
-          make toolchain/install -j$(nproc)
-          
-          # Clean build space first to reject stale headers
-          make package/feeds/amneziawg/kmod-amneziawg/clean
-          make package/feeds/amneziawg/amneziawg-tools/clean
-          make package/feeds/amneziawg/luci-proto-amneziawg/clean
-          
-          # Compile the package stack cleanly from live source code
+          # Compile the package stack cleanly from live source code without full system re-builds
           make package/feeds/amneziawg/kmod-amneziawg/compile V=s -j$(nproc)
           make package/feeds/amneziawg/amneziawg-tools/compile V=s -j$(nproc)
           make package/feeds/amneziawg/luci-proto-amneziawg/compile V=s -j$(nproc)
@@ -71,5 +61,5 @@ jobs:
       - name: Upload All Finished APK Files
         uses: actions/upload-artifact@v4
         with:
-          name: amneziawg-v3-stable-25.12-apks
+          name: amneziawg-v3-stable-25.12.5-apks
           path: openwrt/bin/**/*.apk
